@@ -1,0 +1,22 @@
+# Binary
+zombie
+*.exe
+
+# Runtime data
+history/
+responses/
+requests/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Go
+vendor/
