@@ -1513,7 +1513,14 @@ func (m Model) viewHistory() string {
 			// Format: "2h ago  POST /api/users  host or request-name"
 			ts := timeAgo(entry.Timestamp)
 			var method, host, endpoint string
-			if entry.ReqPath != "" {
+			// Try .curl file first (has original curl with -X, -d flags)
+			if entry.CurlPath != "" {
+				if cmd, err := storage.ReadFile(entry.CurlPath); err == nil {
+					method, host, endpoint = extractEndpoint(strings.TrimSpace(cmd))
+				}
+			}
+			// Fallback to .request file (xh command)
+			if method == "" && entry.ReqPath != "" {
 				if cmd, err := storage.ReadFile(entry.ReqPath); err == nil {
 					method, host, endpoint = extractEndpoint(strings.TrimSpace(cmd))
 				}

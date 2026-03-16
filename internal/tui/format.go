@@ -670,7 +670,12 @@ func timeAgo(ts string) string {
 // extractEndpoint extracts the HTTP method, host, and URL path from a command string.
 func extractEndpoint(cmd string) (method, host, endpoint string) {
 	cmd = strings.TrimSpace(cmd)
+	// Normalize line continuations
+	cmd = strings.ReplaceAll(cmd, "\\\n", " ")
+	cmd = strings.ReplaceAll(cmd, "\\\r\n", " ")
 	fields := strings.Fields(cmd)
+
+	hasData := false
 
 	// Skip leading "xh" or "curl"
 	start := 0
@@ -680,7 +685,23 @@ func extractEndpoint(cmd string) (method, host, endpoint string) {
 
 	for i := start; i < len(fields); i++ {
 		f := fields[i]
-		// Skip flags
+		// Detect -X / --request flag explicitly
+		if f == "-X" || f == "--request" {
+			if i+1 < len(fields) {
+				i++
+				method = strings.ToUpper(fields[i])
+			}
+			continue
+		}
+		// Detect data flags (implies POST)
+		if f == "-d" || f == "--data" || f == "--data-raw" || f == "--data-binary" || f == "--data-urlencode" || f == "-F" || f == "--form" {
+			hasData = true
+			if i+1 < len(fields) {
+				i++ // skip the data value
+			}
+			continue
+		}
+		// Skip other flags
 		if strings.HasPrefix(f, "-") {
 			// skip flag value if it's a flag that takes an argument
 			if !strings.Contains(f, "=") && i+1 < len(fields) && !strings.HasPrefix(fields[i+1], "-") && !looksLikeURL(fields[i+1]) {
@@ -715,7 +736,11 @@ func extractEndpoint(cmd string) (method, host, endpoint string) {
 		}
 	}
 	if method == "" {
-		method = "GET"
+		if hasData {
+			method = "POST"
+		} else {
+			method = "GET"
+		}
 	}
 	return method, host, endpoint
 }
