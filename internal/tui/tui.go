@@ -1011,6 +1011,13 @@ func (m Model) copyCurrentView() string {
 		label = "meta"
 		text = fmt.Sprintf("Request: %s\nCommand: %s\nStatus: %s\nDuration: %s",
 			m.lastReqName, r.Command, r.StatusCode, r.Duration.Round(1_000_000))
+	case bodyCommand:
+		label = "request"
+		if m.lastRawCurl != "" {
+			text = m.lastRawCurl
+		} else {
+			text = r.Command
+		}
 	}
 	if text != "" {
 		clipboard.WriteAll(text)
@@ -1453,11 +1460,15 @@ func (m Model) viewResponse() string {
 	actions := []string{
 		dimStyle.Render("[d] request"),
 		dimStyle.Render("[r] rerun"),
-		dimStyle.Render("[s] save"),
+	}
+	if m.respBodyMode == bodyEditor {
+		actions = append(actions, dimStyle.Render("[s] save"))
+	}
+	actions = append(actions,
 		dimStyle.Render("[y] copy"),
 		dimStyle.Render("[j/k] scroll"),
 		dimStyle.Render("[esc] back"),
-	}
+	)
 	b.WriteString("  " + strings.Join(actions, "  "))
 	if m.copyFeedback != "" {
 		b.WriteString("  " + m.copyFeedback)
