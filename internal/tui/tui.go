@@ -1965,10 +1965,70 @@ func (m Model) viewRequestInfo() string {
 		sb.WriteString("\n\n")
 		for i, r := range m.reqInfoResponses {
 			ts := timeAgo(r.Timestamp)
+
+			// Read response file to extract status, content-type, body size
+			statusBadge := dimStyle.Render("???")
+			ctBadge := ""
+			sizeBadge := ""
+			if raw, err := storage.ReadFile(r.Path); err == nil {
+				var headers, body string
+				if idx := strings.Index(raw, "\n\n"); idx > 0 {
+					headers = raw[:idx]
+					body = raw[idx+2:]
+				} else {
+					body = raw
+				}
+
+				// Status from first header line: "HTTP/1.1 200 OK"
+				if headers != "" {
+					firstLine := strings.SplitN(headers, "\n", 2)[0]
+					parts := strings.SplitN(firstLine, " ", 3)
+					if len(parts) >= 2 {
+						code := parts[1]
+						statusBadge = statusColor(strings.Join(parts[1:], " ")).Render(code)
+					}
+				}
+
+				// Content-Type
+				ct := extractContentType(headers)
+				if ct != "" {
+					// Shorten common content types
+					short := ct
+					if idx := strings.Index(ct, ";"); idx > 0 {
+						short = strings.TrimSpace(ct[:idx])
+					}
+					short = strings.TrimPrefix(short, "application/")
+					short = strings.TrimPrefix(short, "text/")
+					ctBadge = dimStyle.Render(short)
+				}
+
+				// Body size
+				bodyLen := len(body)
+				if bodyLen > 0 {
+					if bodyLen < 1024 {
+						sizeBadge = dimStyle.Render(fmt.Sprintf("%dB", bodyLen))
+					} else if bodyLen < 1024*1024 {
+						sizeBadge = dimStyle.Render(fmt.Sprintf("%.1fKB", float64(bodyLen)/1024))
+					} else {
+						sizeBadge = dimStyle.Render(fmt.Sprintf("%.1fMB", float64(bodyLen)/(1024*1024)))
+					}
+				}
+			}
+
+			timePart := fmt.Sprintf("%-16s", ts)
+			detailParts := []string{statusBadge}
+			if ctBadge != "" {
+				detailParts = append(detailParts, ctBadge)
+			}
+			if sizeBadge != "" {
+				detailParts = append(detailParts, sizeBadge)
+			}
+			details := strings.Join(detailParts, dimStyle.Render(" · "))
+
 			if i == m.reqInfoCursor {
-				sb.WriteString(selectedStyle.Render("  ▸ ") + normalStyle.Render(fmt.Sprintf("%-18s", ts)) + dimStyle.Render(r.Timestamp))
+				sb.WriteString(selectedStyle.Render("  ▸ ") + normalStyle.Render(timePart) + " " + details)
 			} else {
-				sb.WriteString(normalStyle.Render("    ") + dimStyle.Render(fmt.Sprintf("%-18s", ts)) + dimStyle.Render(r.Timestamp))
+				sb.WriteString(normalStyle.Render("    ") + dimStyle.Render(timePart) + " " + details)
 			}
 			sb.WriteString("\n")
 		}
