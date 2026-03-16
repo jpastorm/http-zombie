@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -136,6 +137,11 @@ type Model struct {
 	// delete confirmation
 	deleteTarget       scanner.RequestEntry
 	deleteHistoryEntry storage.HistoryEntry
+
+	// host replace mode
+	hostReplace      bool
+	hostReplaceInput string
+	hostReplaceOld   string
 }
 
 // setCopyFeedback sets a temporary feedback message and returns a command to clear it.
@@ -226,6 +232,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Pre-fill editor with last curl for editing
 		if msg.rawCurl != "" {
 			m.curlTextarea.SetValue(msg.rawCurl)
+			for m.curlTextarea.Line() > 0 {
+				m.curlTextarea.CursorUp()
+			}
+			m.curlTextarea.CursorStart()
 		}
 		return m, nil
 
@@ -236,6 +246,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tea.KeyMsg:
+		// Paste events take priority (Cmd+V / bracket paste)
+		if msg.Paste {
+			return m.handlePaste(string(msg.Runes))
+		}
+		// Host replace mode takes priority over all editor modes
+		if m.hostReplace {
+			return m.handleHostReplaceKey(msg)
+		}
 		// In curl mode, delegate most keys to the textarea
 		if m.mode == viewCurl {
 			return m.handleCurlKey(msg)
@@ -262,9 +280,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.mode == viewHistoryDeleteConfirm {
 			return m.handleHistoryDeleteConfirmKey(msg)
 		}
-		if msg.Paste {
-			return m.handlePaste(string(msg.Runes))
-		}
 		return m.handleKey(msg)
 	}
 
@@ -281,6 +296,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) handlePaste(text string) (tea.Model, tea.Cmd) {
+	if m.hostReplace {
+		m.hostReplaceInput += strings.TrimSpace(text)
+		return m, nil
+	}
 	switch m.mode {
 	case viewCurlSave:
 		m.curlSaveName += text
@@ -428,6 +447,9 @@ func (m Model) handleResponseKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.scroll = 0
 	case "5":
 		m.respBodyMode = bodyMeta
+		m.scroll = 0
+	case "6":
+		m.respBodyMode = bodyCommand
 		m.scroll = 0
 	case "up", "k":
 		if m.scroll > 0 {
@@ -651,28 +673,30 @@ func (m Model) handleCurlKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case "up", "k":
-		if m.curlTab == 1 && m.curlPreviewScroll > 0 {
-			m.curlPreviewScroll--
+		if m.curlTab == 1 {
+			if m.curlPreviewScroll > 0 {
+				m.curlPreviewScroll--
+			}
+			return m, nil
 		}
-		return m, nil
 	case "down", "j":
 		if m.curlTab == 1 {
 			m.curlPreviewScroll++
+			return m, nil
 		}
-		return m, nil
 	case "pgup":
 		if m.curlTab == 1 {
 			m.curlPreviewScroll -= 10
 			if m.curlPreviewScroll < 0 {
 				m.curlPreviewScroll = 0
 			}
+			return m, nil
 		}
-		return m, nil
 	case "pgdown":
 		if m.curlTab == 1 {
 			m.curlPreviewScroll += 10
+			return m, nil
 		}
-		return m, nil
 	case "ctrl+y":
 		raw := strings.TrimSpace(m.curlTextarea.Value())
 		if raw != "" {
@@ -680,6 +704,10 @@ func (m Model) handleCurlKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, m.setCopyFeedback("curl")
 		}
 		return m, nil
+	case "ctrl+h":
+		if m.startHostReplace() {
+			return m, nil
+		}
 	}
 	// In editor mode, delegate to textarea; in preview, ignore
 	if m.curlTab == 0 {
@@ -853,6 +881,18 @@ func (m Model) handleResponseEditorKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, m.setCopyFeedback("curl")
 		}
 		return m, nil
+	case "ctrl+g":
+		input := strings.TrimSpace(m.curlTextarea.Value())
+		if input != "" {
+			m.lastRawCurl = input
+			m.mode = viewResponseSave
+			m.respSaveName = ""
+		}
+		return m, nil
+	case "ctrl+h":
+		if m.startHostReplace() {
+			return m, nil
+		}
 	}
 	// Delegate to textarea
 	var cmd tea.Cmd
@@ -1196,6 +1236,7 @@ func (m Model) viewResponse() string {
 		{"3:response raw", bodyRaw},
 		{"4:headers", bodyHeaders},
 		{"5:meta", bodyMeta},
+		{"6:request", bodyCommand},
 	}
 	var tabParts []string
 	for _, t := range tabs {
@@ -1257,15 +1298,23 @@ func (m Model) viewResponse() string {
 			meta.WriteString(metaKeyStyle.Render("  Error:     ") + errorStyle.Render(r.Error) + "\n")
 		}
 		content = meta.String()
+	case bodyCommand:
+		content = m.formatCurlRequest(contentWrapW)
 	}
 
 	if m.respBodyMode == bodyEditor {
 		// Editor mode - render textarea directly
 		b.WriteString("  " + m.curlTextarea.View())
 		b.WriteString("\n")
+		if m.hostReplace {
+			b.WriteString(m.hostReplaceBar())
+			b.WriteString("\n")
+		}
 		b.WriteString("\n")
 		actions := []string{
 			dimStyle.Render("[ctrl+x] run"),
+			dimStyle.Render("[ctrl+g] save"),
+			dimStyle.Render("[ctrl+h] host"),
 			dimStyle.Render("[tab] switch tab"),
 			dimStyle.Render("[ctrl+y] copy"),
 			dimStyle.Render("[esc] back"),
@@ -1673,6 +1722,10 @@ func (m Model) openRequestInfo(entry scanner.RequestEntry) (Model, tea.Cmd) {
 	m.reqInfoCursor = 0
 	m.reqInfoScroll = 0
 	m.curlTextarea.SetValue(rawCurl)
+	for m.curlTextarea.Line() > 0 {
+		m.curlTextarea.CursorUp()
+	}
+	m.curlTextarea.CursorStart()
 	m.mode = viewRequestInfo
 	return m, m.curlTextarea.Focus()
 }
@@ -1706,7 +1759,7 @@ func (m Model) handleRequestInfoKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.reqInfoRawCurl = input
 			m.copyFeedback = successStyle.Render("✓ saved")
 			return m, tea.Tick(2*time.Second, func(time.Time) tea.Msg { return clearCopyMsg{} })
-		case "tab", "2":
+		case "tab":
 			m.reqInfoPane = 1
 			m.reqInfoResponses = storage.ListRequestResponses(m.baseDir, m.reqInfoEntry.Name)
 			m.reqInfoScroll = 0
@@ -1720,6 +1773,10 @@ func (m Model) handleRequestInfoKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				return m, m.setCopyFeedback("curl")
 			}
 			return m, nil
+		case "ctrl+h":
+			if m.startHostReplace() {
+				return m, nil
+			}
 		}
 		// Delegate to textarea
 		var cmd tea.Cmd
@@ -1829,8 +1886,12 @@ func (m Model) viewRequestInfo() string {
 		// Editor pane - render textarea directly
 		b.WriteString("  " + m.curlTextarea.View())
 		b.WriteString("\n")
+		if m.hostReplace {
+			b.WriteString(m.hostReplaceBar())
+			b.WriteString("\n")
+		}
 		b.WriteString("\n")
-		b.WriteString(helpStyle.Render("  [ctrl+x] run  [ctrl+s] save  [tab/2] responses  [ctrl+y] copy  [esc] back"))
+		b.WriteString(helpStyle.Render("  [ctrl+x] run  [ctrl+h] host  [ctrl+s] save  [tab] responses  [ctrl+y] copy  [esc] back"))
 		if m.copyFeedback != "" {
 			b.WriteString("  " + m.copyFeedback)
 		}
@@ -2108,6 +2169,10 @@ func (m Model) viewCurl() string {
 		// ─── EDITOR TAB ───
 		b.WriteString(m.curlTextarea.View())
 		b.WriteString("\n")
+		if m.hostReplace {
+			b.WriteString(m.hostReplaceBar())
+			b.WriteString("\n")
+		}
 	} else {
 		// ─── PREVIEW TAB ───
 		if raw == "" {
@@ -2239,10 +2304,12 @@ func (m Model) viewCurl() string {
 	var actions []string
 	if raw != "" {
 		actions = append(actions, buttonStyle.Render("ctrl+x run"))
+		actions = append(actions, buttonDimStyle.Render("ctrl+h host"))
 		actions = append(actions, buttonDimStyle.Render("ctrl+g save"))
 		actions = append(actions, buttonDimStyle.Render("ctrl+y copy"))
 	} else {
 		actions = append(actions, buttonDimStyle.Render("ctrl+x run"))
+		actions = append(actions, buttonDimStyle.Render("ctrl+h host"))
 		actions = append(actions, buttonDimStyle.Render("ctrl+g save"))
 		actions = append(actions, buttonDimStyle.Render("ctrl+y copy"))
 	}
@@ -2258,6 +2325,80 @@ func (m Model) viewCurl() string {
 		content += strings.Repeat("\n", targetLines-contentLines)
 	}
 	return curlOuterBorder.Width(m.width - 4).Render(content)
+}
+
+// formatCurlRequest renders the original curl command in a nice formatted view.
+func (m Model) formatCurlRequest(wrapW int) string {
+	raw := m.lastRawCurl
+	if raw == "" {
+		return dimStyle.Render("  <no curl command available>")
+	}
+
+	preview := parseCurlPreview(raw)
+	var out strings.Builder
+
+	// Method + URL
+	badge := methodBadge(preview.method)
+	if preview.url != "" {
+		out.WriteString("  " + badge + "  " + curlURLStyle.Render(preview.url))
+	} else {
+		out.WriteString("  " + badge + "  " + dimStyle.Render("<no url>"))
+	}
+	out.WriteString("\n\n")
+
+	// Divider
+	out.WriteString("  " + dimStyle.Render(strings.Repeat("─", wrapW-4)))
+	out.WriteString("\n\n")
+
+	// Headers
+	if len(preview.headers) > 0 {
+		out.WriteString("  " + curlSectionTitle.Render("HEADERS"))
+		out.WriteString(dimStyle.Render(fmt.Sprintf(" (%d)", len(preview.headers))))
+		out.WriteString("\n")
+		for _, h := range preview.headers {
+			var key, val string
+			if idx := strings.Index(h, ": "); idx > 0 {
+				key = h[:idx]
+				val = h[idx+2:]
+			} else if idx := strings.Index(h, ":"); idx > 0 {
+				key = h[:idx]
+				val = h[idx+1:]
+			} else {
+				out.WriteString("    " + dimStyle.Render(h) + "\n")
+				continue
+			}
+			out.WriteString("    " + headerKeyStyle.Render(key) + dimStyle.Render(": ") + headerValStyle.Render(val) + "\n")
+		}
+		out.WriteString("\n")
+	}
+
+	// Body
+	if preview.body != "" {
+		out.WriteString("  " + curlSectionTitle.Render("BODY"))
+		out.WriteString(dimStyle.Render(fmt.Sprintf(" (%d bytes)", len(preview.body))))
+		out.WriteString("\n")
+		if isJSON(preview.body) {
+			out.WriteString(prettyJSONWidth(preview.body, wrapW-4))
+		} else {
+			out.WriteString("    " + wrapContent(preview.body, wrapW-4))
+		}
+		out.WriteString("\n\n")
+	}
+
+	// Flags
+	if len(preview.flags) > 0 {
+		out.WriteString("  " + curlSectionTitle.Render("OPTIONS") + "\n")
+		for _, f := range preview.flags {
+			out.WriteString("    " + dimStyle.Render("• "+f) + "\n")
+		}
+		out.WriteString("\n")
+	}
+
+	// Raw curl
+	out.WriteString("  " + curlSectionTitle.Render("RAW CURL") + "\n")
+	out.WriteString("  " + dimStyle.Render(wrapContent(raw, wrapW-4)))
+
+	return out.String()
 }
 
 // methodBadge returns a styled method badge.
@@ -2308,4 +2449,194 @@ func (m Model) viewCurlSave() string {
 	b.WriteString(helpStyle.Render("[enter] save  [esc] back"))
 
 	return b.String()
+}
+
+// extractURLOrigin finds the origin (scheme://host:port) from a curl command text.
+// Detects: https://host, http://host, localhost, localhost:port, 127.0.0.1, IPs, etc.
+func extractURLOrigin(text string) string {
+	// First try URLs with scheme (http:// or https://)
+	for _, scheme := range []string{"https://", "http://"} {
+		idx := strings.Index(text, scheme)
+		if idx < 0 {
+			continue
+		}
+		rest := text[idx:]
+		end := len(rest)
+		for i, c := range rest {
+			if i == 0 {
+				continue
+			}
+			if c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\'' || c == '"' || c == '\\' {
+				end = i
+				break
+			}
+		}
+		fullURL := rest[:end]
+		u, err := url.Parse(fullURL)
+		if err == nil && u.Host != "" {
+			return u.Scheme + "://" + u.Host
+		}
+	}
+
+	// Then try bare hosts: localhost, 127.0.0.1, 0.0.0.0, 192.168.x.x, 10.x.x.x, etc.
+	// Look for tokens that look like host or host:port followed by a path or space
+	words := extractURLTokens(text)
+	for _, w := range words {
+		// Strip surrounding quotes
+		w = strings.Trim(w, "'\"")
+		if w == "" {
+			continue
+		}
+		// Check if starts with a known bare host pattern
+		host, ok := parseBareOrigin(w)
+		if ok {
+			return host
+		}
+	}
+	return ""
+}
+
+// extractURLTokens pulls out tokens from a curl command that might be URLs.
+// It looks for tokens after the curl command itself, skipping flags.
+func extractURLTokens(text string) []string {
+	var tokens []string
+	// Split by whitespace and backslash-newlines
+	normalized := strings.ReplaceAll(text, "\\\n", " ")
+	normalized = strings.ReplaceAll(text, "\\\r\n", " ")
+	parts := strings.Fields(normalized)
+	for i, p := range parts {
+		// Skip the "curl" command itself and flags
+		if i == 0 && strings.EqualFold(p, "curl") {
+			continue
+		}
+		if strings.HasPrefix(p, "-") {
+			continue
+		}
+		tokens = append(tokens, p)
+	}
+	return tokens
+}
+
+// parseBareOrigin checks if a token starts with a bare host (no scheme) like
+// localhost, localhost:8080, 127.0.0.1:3000, 0.0.0.0, 192.168.1.1, 10.0.0.1
+// and returns the host:port portion.
+func parseBareOrigin(token string) (string, bool) {
+	token = strings.Trim(token, "'\"")
+
+	// If it has a scheme, skip (handled by the main logic)
+	if strings.HasPrefix(token, "http://") || strings.HasPrefix(token, "https://") {
+		return "", false
+	}
+
+	// Extract host:port part (everything before the first /)
+	hostPort := token
+	if slashIdx := strings.Index(token, "/"); slashIdx >= 0 {
+		hostPort = token[:slashIdx]
+	}
+
+	if hostPort == "" {
+		return "", false
+	}
+
+	// Check for known bare host patterns
+	lower := strings.ToLower(hostPort)
+
+	// localhost or localhost:port
+	if lower == "localhost" || strings.HasPrefix(lower, "localhost:") {
+		return hostPort, true
+	}
+
+	// IP addresses: 127.x.x.x, 0.0.0.0, 192.168.x.x, 10.x.x.x, 172.x.x.x
+	host := hostPort
+	if colonIdx := strings.LastIndex(hostPort, ":"); colonIdx >= 0 {
+		host = hostPort[:colonIdx]
+	}
+	if isIPAddress(host) {
+		return hostPort, true
+	}
+
+	return "", false
+}
+
+// isIPAddress checks if a string looks like an IPv4 address.
+func isIPAddress(s string) bool {
+	parts := strings.Split(s, ".")
+	if len(parts) != 4 {
+		return false
+	}
+	for _, p := range parts {
+		if p == "" || len(p) > 3 {
+			return false
+		}
+		for _, c := range p {
+			if c < '0' || c > '9' {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// handleHostReplaceKey handles keys during the host replace mini-mode.
+func (m Model) handleHostReplaceKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc":
+		m.hostReplace = false
+		m.hostReplaceInput = ""
+		m.hostReplaceOld = ""
+		return m, m.curlTextarea.Focus()
+	case "enter":
+		newHost := strings.TrimSpace(m.hostReplaceInput)
+		if newHost != "" && m.hostReplaceOld != "" {
+			old := m.curlTextarea.Value()
+			replaced := strings.ReplaceAll(old, m.hostReplaceOld, newHost)
+			m.curlTextarea.SetValue(replaced)
+		}
+		m.hostReplace = false
+		m.hostReplaceInput = ""
+		m.hostReplaceOld = ""
+		return m, m.curlTextarea.Focus()
+	case "backspace":
+		if len(m.hostReplaceInput) > 0 {
+			m.hostReplaceInput = m.hostReplaceInput[:len(m.hostReplaceInput)-1]
+		}
+		return m, nil
+	case "ctrl+c":
+		return m, tea.Quit
+	case "ctrl+v":
+		clip, err := clipboard.ReadAll()
+		if err == nil && clip != "" {
+			m.hostReplaceInput += strings.TrimSpace(clip)
+		}
+		return m, nil
+	default:
+		s := msg.String()
+		if len(s) == 1 {
+			m.hostReplaceInput += s
+		}
+		return m, nil
+	}
+}
+
+// startHostReplace activates the host replace mini-mode.
+func (m *Model) startHostReplace() bool {
+	origin := extractURLOrigin(m.curlTextarea.Value())
+	if origin == "" {
+		return false
+	}
+	m.hostReplace = true
+	m.hostReplaceOld = origin
+	m.hostReplaceInput = ""
+	m.curlTextarea.Blur()
+	return true
+}
+
+// hostReplaceBar renders the host replace input bar.
+func (m Model) hostReplaceBar() string {
+	old := lipgloss.NewStyle().Foreground(ghostGray).Strikethrough(true).Render(m.hostReplaceOld)
+	arrow := lipgloss.NewStyle().Foreground(zombieGreen).Bold(true).Render(" → ")
+	input := lipgloss.NewStyle().Foreground(boneWhite).Render(m.hostReplaceInput)
+	cursor := selectedStyle.Render("█")
+	hint := dimStyle.Render("  [enter] apply  [esc] cancel")
+	return lipgloss.NewStyle().Foreground(zombieGreen).Bold(true).Render("  🔗 HOST: ") + old + arrow + input + cursor + hint
 }
