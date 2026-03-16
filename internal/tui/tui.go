@@ -354,6 +354,33 @@ func (m Model) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.cursor < len(m.filtered)-1 {
 			m.cursor++
 		}
+	case "pgup":
+		pageSize := m.height - 12
+		if pageSize < 5 {
+			pageSize = 5
+		}
+		m.cursor -= pageSize
+		if m.cursor < 0 {
+			m.cursor = 0
+		}
+	case "pgdown":
+		pageSize := m.height - 12
+		if pageSize < 5 {
+			pageSize = 5
+		}
+		m.cursor += pageSize
+		if m.cursor >= len(m.filtered) {
+			m.cursor = len(m.filtered) - 1
+		}
+		if m.cursor < 0 {
+			m.cursor = 0
+		}
+	case "home":
+		m.cursor = 0
+	case "end":
+		if len(m.filtered) > 0 {
+			m.cursor = len(m.filtered) - 1
+		}
 	case "/":
 		m.mode = viewSearch
 		m.search = ""
@@ -1147,6 +1174,12 @@ func (m Model) viewList() string {
 			end = len(m.filtered)
 		}
 
+		// Scroll indicator: items above
+		if start > 0 {
+			b.WriteString(scrollIndicator.Render(fmt.Sprintf("  ↑ %d more above", start)))
+			b.WriteString("\n")
+		}
+
 		for i := start; i < end; i++ {
 			entry := m.filtered[i]
 			if i == m.cursor {
@@ -1154,6 +1187,23 @@ func (m Model) viewList() string {
 			} else {
 				b.WriteString(normalStyle.Render("    " + entry.Name))
 			}
+			b.WriteString("\n")
+		}
+
+		// Scroll indicator: items below
+		remaining := len(m.filtered) - end
+		if remaining > 0 {
+			b.WriteString(scrollIndicator.Render(fmt.Sprintf("  ↓ %d more below", remaining)))
+			b.WriteString("\n")
+		}
+
+		// Position counter
+		if len(m.filtered) > visibleHeight {
+			pos := dimStyle.Render(fmt.Sprintf("  %d/%d", m.cursor+1, len(m.filtered)))
+			if m.mode == viewSearch {
+				pos += dimStyle.Render(fmt.Sprintf(" (filtered from %d)", len(m.requests)))
+			}
+			b.WriteString(pos)
 			b.WriteString("\n")
 		}
 	}
