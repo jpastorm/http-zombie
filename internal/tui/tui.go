@@ -248,6 +248,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyMsg:
 		// Paste events take priority (Cmd+V / bracket paste)
 		if msg.Paste {
+			// Host replace mode intercepts paste before editor modes
+			if m.hostReplace {
+				m.hostReplaceInput += strings.TrimSpace(string(msg.Runes))
+				return m, nil
+			}
 			// In textarea-backed editor modes, let the textarea handle paste
 			if m.mode == viewCurl && m.curlTab == 0 {
 				return m.handleCurlKey(msg)
@@ -2771,10 +2776,24 @@ func (m *Model) startHostReplace() bool {
 
 // hostReplaceBar renders the host replace input bar.
 func (m Model) hostReplaceBar() string {
-	old := lipgloss.NewStyle().Foreground(ghostGray).Strikethrough(true).Render(m.hostReplaceOld)
+	label := lipgloss.NewStyle().Foreground(zombieGreen).Bold(true).Render("  🔗 HOST ")
 	arrow := lipgloss.NewStyle().Foreground(zombieGreen).Bold(true).Render(" → ")
 	input := lipgloss.NewStyle().Foreground(boneWhite).Render(m.hostReplaceInput)
 	cursor := selectedStyle.Render("█")
 	hint := dimStyle.Render("  [enter] apply  [esc] cancel")
-	return lipgloss.NewStyle().Foreground(zombieGreen).Bold(true).Render("  🔗 HOST: ") + old + arrow + input + cursor + hint
+
+	// Truncate old host if it doesn't fit in the terminal width
+	maxOldLen := m.width - 40 // leave room for label, arrow, cursor, hint
+	if maxOldLen < 20 {
+		maxOldLen = 20
+	}
+	oldHost := m.hostReplaceOld
+	if len(oldHost) > maxOldLen {
+		oldHost = oldHost[:maxOldLen-3] + "..."
+	}
+	old := lipgloss.NewStyle().Foreground(ghostGray).Strikethrough(true).Render(oldHost)
+
+	line1 := label + old
+	line2 := "       " + arrow + input + cursor + hint
+	return line1 + "\n" + line2
 }
