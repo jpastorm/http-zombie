@@ -248,6 +248,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyMsg:
 		// Paste events take priority (Cmd+V / bracket paste)
 		if msg.Paste {
+			// In textarea-backed editor modes, let the textarea handle paste
+			if m.mode == viewCurl && m.curlTab == 0 {
+				return m.handleCurlKey(msg)
+			}
+			if m.mode == viewResponse && m.respBodyMode == bodyEditor {
+				return m.handleResponseEditorKey(msg)
+			}
+			if m.mode == viewRequestInfo && m.reqInfoPane == 0 {
+				return m.handleRequestInfoKey(msg)
+			}
 			return m.handlePaste(string(msg.Runes))
 		}
 		// Host replace mode takes priority over all editor modes
