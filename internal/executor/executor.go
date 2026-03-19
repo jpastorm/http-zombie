@@ -2,6 +2,7 @@ package executor
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"os/exec"
 	"strings"
@@ -44,12 +45,17 @@ func CheckXh() (string, error) {
 
 // Run executes xh with the given args and optional body via stdin.
 func Run(args []string, body string) (*Result, error) {
+	return RunCtx(context.Background(), args, body)
+}
+
+// RunCtx executes xh with the given args, optional body, and a cancellable context.
+func RunCtx(ctx context.Context, args []string, body string) (*Result, error) {
 	args = append(args, "--print=hb")
 
 	cmdStr := "xh " + strings.Join(args, " ")
 
 	start := time.Now()
-	cmd := exec.Command("xh", args...)
+	cmd := exec.CommandContext(ctx, "xh", args...)
 
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout

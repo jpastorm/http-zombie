@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"context"
 	"fmt"
 	"net/url"
 	"os"
@@ -67,6 +68,8 @@ type requestErrMsg struct {
 }
 
 type clearCopyMsg struct{}
+
+type spinnerTickMsg struct{}
 
 // Model is the main TUI model.
 type Model struct {
@@ -142,6 +145,10 @@ type Model struct {
 	hostReplace      bool
 	hostReplaceInput string
 	hostReplaceOld   string
+
+	// running state
+	cancelFunc context.CancelFunc
+	spinnerIdx int
 }
 
 // setCopyFeedback sets a temporary feedback message and returns a command to clear it.
@@ -218,7 +225,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.copyFeedback = ""
 		return m, nil
 
+	case spinnerTickMsg:
+		if m.mode != viewRunning {
+			return m, nil
+		}
+		m.spinnerIdx++
+		return m, tea.Tick(120*time.Millisecond, func(time.Time) tea.Msg { return spinnerTickMsg{} })
+
 	case requestDoneMsg:
+		if m.mode != viewRunning {
+			return m, nil
+		}
 		m.lastResult = msg.result
 		m.lastReqName = msg.requestName
 		m.lastRespPath = msg.respPath
@@ -240,6 +257,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case requestErrMsg:
+		if m.mode != viewRunning {
+			return m, nil
+		}
 		m.statusMsg = errorStyle.Render("☠ Error: " + msg.err.Error())
 		m.mode = viewList
 		m.resetSearch()
@@ -336,7 +356,17 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case viewResponse:
 		return m.handleResponseKey(msg)
 	case viewRunning:
-		return m, nil // ignore input while running
+		switch msg.String() {
+		case "esc", "q", "ctrl+c":
+			if m.cancelFunc != nil {
+				m.cancelFunc()
+				m.cancelFunc = nil
+			}
+			m.mode = viewList
+			m.statusMsg = dimStyle.Render("🪦 request cancelled")
+			m.resetSearch()
+		}
+		return m, nil
 	case viewHistory:
 		return m.handleHistoryKey(msg)
 	case viewHistoryDetail:
@@ -799,30 +829,37 @@ func (m Model) handleCurlSaveKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 func (m Model) executeCurl() (Model, tea.Cmd) {
 	m.mode = viewRunning
+	m.spinnerIdx = 0
+
+	ctx, cancel := context.WithCancel(context.Background())
+	m.cancelFunc = cancel
 
 	curlInput := strings.TrimSpace(m.curlTextarea.Value())
-	return m, func() tea.Msg {
-		req, err := parser.ParseString(curlInput)
-		if err != nil {
-			return requestErrMsg{err: err}
-		}
+	return m, tea.Batch(
+		tea.Tick(120*time.Millisecond, func(time.Time) tea.Msg { return spinnerTickMsg{} }),
+		func() tea.Msg {
+			req, err := parser.ParseString(curlInput)
+			if err != nil {
+				return requestErrMsg{err: err}
+			}
 
-		args, body := parser.CurlToXhArgs(req.RawCurl)
-		result, err := executor.Run(args, body)
-		if err != nil {
-			return requestErrMsg{err: err}
-		}
+			args, body := parser.CurlToXhArgs(req.RawCurl)
+			result, err := executor.RunCtx(ctx, args, body)
+			if err != nil {
+				return requestErrMsg{err: err}
+			}
 
-		storage.SaveHistory(m.baseDir, "curl-quick-run", result, curlInput)
+			storage.SaveHistory(m.baseDir, "curl-quick-run", result, curlInput)
 
-		return requestDoneMsg{
-			result:      result,
-			requestName: "curl-quick-run",
-			rawCurl:     curlInput,
-			xhArgs:      args,
-			xhBody:      body,
-		}
-	}
+			return requestDoneMsg{
+				result:      result,
+				requestName: "curl-quick-run",
+				rawCurl:     curlInput,
+				xhArgs:      args,
+				xhBody:      body,
+			}
+		},
+	)
 }
 
 func (m *Model) saveCurlFile(name string, content string) error {
@@ -872,26 +909,32 @@ func (m *Model) applyFilter() {
 
 func (m Model) rerunCurl() (Model, tea.Cmd) {
 	m.mode = viewRunning
+	m.spinnerIdx = 0
+	ctx, cancel := context.WithCancel(context.Background())
+	m.cancelFunc = cancel
 	curlInput := m.lastRawCurl
-	return m, func() tea.Msg {
-		req, err := parser.ParseString(curlInput)
-		if err != nil {
-			return requestErrMsg{err: err}
-		}
-		args, body := parser.CurlToXhArgs(req.RawCurl)
-		result, err := executor.Run(args, body)
-		if err != nil {
-			return requestErrMsg{err: err}
-		}
-		storage.SaveHistory(m.baseDir, "curl-quick-run", result, curlInput)
-		return requestDoneMsg{
-			result:      result,
-			requestName: "curl-quick-run",
-			rawCurl:     curlInput,
-			xhArgs:      args,
-			xhBody:      body,
-		}
-	}
+	return m, tea.Batch(
+		tea.Tick(120*time.Millisecond, func(time.Time) tea.Msg { return spinnerTickMsg{} }),
+		func() tea.Msg {
+			req, err := parser.ParseString(curlInput)
+			if err != nil {
+				return requestErrMsg{err: err}
+			}
+			args, body := parser.CurlToXhArgs(req.RawCurl)
+			result, err := executor.RunCtx(ctx, args, body)
+			if err != nil {
+				return requestErrMsg{err: err}
+			}
+			storage.SaveHistory(m.baseDir, "curl-quick-run", result, curlInput)
+			return requestDoneMsg{
+				result:      result,
+				requestName: "curl-quick-run",
+				rawCurl:     curlInput,
+				xhArgs:      args,
+				xhBody:      body,
+			}
+		},
+	)
 }
 
 // handleResponseEditorKey handles keys when the response view editor tab is active.
@@ -944,61 +987,73 @@ func (m Model) handleResponseEditorKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 func (m Model) executeFromReqInfoEditor() (Model, tea.Cmd) {
 	m.mode = viewRunning
+	m.spinnerIdx = 0
+	ctx, cancel := context.WithCancel(context.Background())
+	m.cancelFunc = cancel
 	curlInput := strings.TrimSpace(m.curlTextarea.Value())
 	entryName := m.reqInfoEntry.Name
 	baseDir := m.baseDir
-	return m, func() tea.Msg {
-		req, err := parser.ParseString(curlInput)
-		if err != nil {
-			return requestErrMsg{err: err}
-		}
-		args, body := parser.CurlToXhArgs(req.RawCurl)
-		result, err := executor.Run(args, body)
-		if err != nil {
-			return requestErrMsg{err: err}
-		}
-		respPath, _ := storage.SaveResponse(baseDir, entryName, result)
-		storage.SaveHistory(baseDir, entryName, result, curlInput)
-		return requestDoneMsg{
-			result:      result,
-			requestName: entryName,
-			respPath:    respPath,
-			rawCurl:     curlInput,
-			xhArgs:      args,
-			xhBody:      body,
-		}
-	}
+	return m, tea.Batch(
+		tea.Tick(120*time.Millisecond, func(time.Time) tea.Msg { return spinnerTickMsg{} }),
+		func() tea.Msg {
+			req, err := parser.ParseString(curlInput)
+			if err != nil {
+				return requestErrMsg{err: err}
+			}
+			args, body := parser.CurlToXhArgs(req.RawCurl)
+			result, err := executor.RunCtx(ctx, args, body)
+			if err != nil {
+				return requestErrMsg{err: err}
+			}
+			respPath, _ := storage.SaveResponse(baseDir, entryName, result)
+			storage.SaveHistory(baseDir, entryName, result, curlInput)
+			return requestDoneMsg{
+				result:      result,
+				requestName: entryName,
+				respPath:    respPath,
+				rawCurl:     curlInput,
+				xhArgs:      args,
+				xhBody:      body,
+			}
+		},
+	)
 }
 
 func (m Model) executeFromResponseEditor() (Model, tea.Cmd) {
 	m.mode = viewRunning
+	m.spinnerIdx = 0
+	ctx, cancel := context.WithCancel(context.Background())
+	m.cancelFunc = cancel
 	curlInput := strings.TrimSpace(m.curlTextarea.Value())
 	reqName := m.lastReqName
 	baseDir := m.baseDir
-	return m, func() tea.Msg {
-		req, err := parser.ParseString(curlInput)
-		if err != nil {
-			return requestErrMsg{err: err}
-		}
-		args, body := parser.CurlToXhArgs(req.RawCurl)
-		result, err := executor.Run(args, body)
-		if err != nil {
-			return requestErrMsg{err: err}
-		}
-		var respPath string
-		if reqName != "curl-quick-run" {
-			respPath, _ = storage.SaveResponse(baseDir, reqName, result)
-		}
-		storage.SaveHistory(baseDir, reqName, result, curlInput)
-		return requestDoneMsg{
-			result:      result,
-			requestName: reqName,
-			respPath:    respPath,
-			rawCurl:     curlInput,
-			xhArgs:      args,
-			xhBody:      body,
-		}
-	}
+	return m, tea.Batch(
+		tea.Tick(120*time.Millisecond, func(time.Time) tea.Msg { return spinnerTickMsg{} }),
+		func() tea.Msg {
+			req, err := parser.ParseString(curlInput)
+			if err != nil {
+				return requestErrMsg{err: err}
+			}
+			args, body := parser.CurlToXhArgs(req.RawCurl)
+			result, err := executor.RunCtx(ctx, args, body)
+			if err != nil {
+				return requestErrMsg{err: err}
+			}
+			var respPath string
+			if reqName != "curl-quick-run" {
+				respPath, _ = storage.SaveResponse(baseDir, reqName, result)
+			}
+			storage.SaveHistory(baseDir, reqName, result, curlInput)
+			return requestDoneMsg{
+				result:      result,
+				requestName: reqName,
+				respPath:    respPath,
+				rawCurl:     curlInput,
+				xhArgs:      args,
+				xhBody:      body,
+			}
+		},
+	)
 }
 
 // copyCurrentView copies response content based on the active tab.
@@ -1083,35 +1138,42 @@ func (m Model) copyHistoryView() string {
 
 func (m Model) executeRequest(entry scanner.RequestEntry) (Model, tea.Cmd) {
 	m.mode = viewRunning
+	m.spinnerIdx = 0
 	m.statusMsg = dimStyle.Render("🧟 zombie is fetching... braaaains...")
 
-	return m, func() tea.Msg {
-		req, err := parser.ParseFile(entry.Path)
-		if err != nil {
-			return requestErrMsg{err: err}
-		}
+	ctx, cancel := context.WithCancel(context.Background())
+	m.cancelFunc = cancel
 
-		args, body := parser.CurlToXhArgs(req.RawCurl)
-		result, err := executor.Run(args, body)
-		if err != nil {
-			return requestErrMsg{err: err}
-		}
+	return m, tea.Batch(
+		tea.Tick(120*time.Millisecond, func(time.Time) tea.Msg { return spinnerTickMsg{} }),
+		func() tea.Msg {
+			req, err := parser.ParseFile(entry.Path)
+			if err != nil {
+				return requestErrMsg{err: err}
+			}
 
-		// Save response
-		respPath, _ := storage.SaveResponse(m.baseDir, entry.Name, result)
+			args, body := parser.CurlToXhArgs(req.RawCurl)
+			result, err := executor.RunCtx(ctx, args, body)
+			if err != nil {
+				return requestErrMsg{err: err}
+			}
 
-		// Save history
-		storage.SaveHistory(m.baseDir, entry.Name, result, req.RawCurl)
+			// Save response
+			respPath, _ := storage.SaveResponse(m.baseDir, entry.Name, result)
 
-		return requestDoneMsg{
-			result:      result,
-			requestName: entry.Name,
-			respPath:    respPath,
-			rawCurl:     req.RawCurl,
-			xhArgs:      args,
-			xhBody:      body,
-		}
-	}
+			// Save history
+			storage.SaveHistory(m.baseDir, entry.Name, result, req.RawCurl)
+
+			return requestDoneMsg{
+				result:      result,
+				requestName: entry.Name,
+				respPath:    respPath,
+				rawCurl:     req.RawCurl,
+				xhArgs:      args,
+				xhBody:      body,
+			}
+		},
+	)
 }
 
 func (m Model) showHistory() (Model, tea.Cmd) {
@@ -1255,6 +1317,70 @@ func (m Model) viewRunning() string {
 	b.WriteString(titleStyle.Render(zombieBanner()))
 	b.WriteString("\n")
 	b.WriteString(dimStyle.Render("  🧟 zombie is fetching... braaaains...\n"))
+	b.WriteString("\n")
+
+	// Smooth gradient wave progress bar (ping-pong)
+	barWidth := 32
+	wave := []rune{'░', '▒', '▓', '█', '▓', '▒', '░'}
+	waveLen := len(wave)
+
+	// Ping-pong: go forward then backward across the bar
+	cycle := 2 * barWidth
+	raw := m.spinnerIdx % cycle
+	center := raw
+	if raw > barWidth {
+		center = cycle - raw
+	}
+
+	bar := make([]rune, barWidth)
+	for i := range bar {
+		bar[i] = '░'
+	}
+	// Paint the wave centered at 'center'
+	for j, ch := range wave {
+		offset := j - waveLen/2
+		pos := center + offset
+		if pos >= 0 && pos < barWidth {
+			bar[pos] = ch
+		}
+	}
+
+	barStr := string(bar)
+	barStyled := lipgloss.NewStyle().Foreground(zombieGreen).Render(barStr)
+	b.WriteString("  " + dimStyle.Render("[") + barStyled + dimStyle.Render("]") + "\n")
+	b.WriteString("\n")
+
+	// Zombie icon + message (both change together every ~25 ticks = ~3s)
+	zombies := []string{"🧟", "💀", "🦴", "🧠", "🪦"}
+	msgs := []string{
+		"digging up endpoints...",
+		"shambling through packets...",
+		"eating response headers...",
+		"crawling to the server...",
+		"moaning at the API...",
+		"dragging bytes back...",
+		"reanimating the connection...",
+		"gnawing on TCP handshakes...",
+		"lurching toward the host...",
+		"decomposing the payload...",
+		"unearthing status codes...",
+		"stumbling over firewalls...",
+		"haunting the DNS resolver...",
+		"feasting on JSON brains...",
+		"rising from the socket grave...",
+		"infecting the request pipeline...",
+		"groaning at slow latency...",
+		"chewing through SSL certs...",
+		"shuffling past load balancers...",
+		"collecting severed headers...",
+	}
+	step := m.spinnerIdx / 25
+	b.WriteString("  " + zombies[step%len(zombies)] + " ")
+	msg := msgs[step%len(msgs)]
+	b.WriteString(dimStyle.Render(msg) + "\n")
+	b.WriteString("\n")
+	b.WriteString(helpStyle.Render("  [esc/q] cancel"))
+
 	return b.String()
 }
 
