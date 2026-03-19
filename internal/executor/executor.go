@@ -79,10 +79,27 @@ func RunCtx(ctx context.Context, args []string, body string) (*Result, error) {
 			result.Error = err.Error()
 		}
 		result.Body = stdout.String()
+		// Try to split headers from body even on error (e.g. 4xx/5xx)
+		// Normalize \r\n to \n so the \n\n separator is found correctly
+		if out := strings.ReplaceAll(stdout.String(), "\r\n", "\n"); out != "" {
+			if idx := strings.Index(out, "\n"); idx > 0 {
+				firstLine := out[:idx]
+				if strings.HasPrefix(firstLine, "HTTP/") {
+					parts := strings.Fields(firstLine)
+					if len(parts) >= 2 {
+						result.StatusCode = parts[1]
+					}
+					if sepIdx := strings.Index(out, "\n\n"); sepIdx > 0 {
+						result.Headers = out[:sepIdx]
+						result.Body = out[sepIdx+2:]
+					}
+				}
+			}
+		}
 		return result, nil
 	}
 
-	output := stdout.String()
+	output := strings.ReplaceAll(stdout.String(), "\r\n", "\n")
 	result.Body = output
 
 	// Try to extract status code from the first line

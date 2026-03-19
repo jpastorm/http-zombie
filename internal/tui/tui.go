@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/url"
 	"os"
@@ -539,6 +540,11 @@ func (m Model) handleResponseKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "y":
 		if label := m.copyCurrentView(); label != "" {
 			return m, m.setCopyFeedback(label)
+		}
+	case "c":
+		if m.respBodyMode == bodyCommand && m.lastRawCurl != "" {
+			clipboard.WriteAll(m.lastRawCurl)
+			return m, m.setCopyFeedback("raw curl")
 		}
 	case "s":
 		if m.lastRawCurl != "" {
@@ -1083,11 +1089,7 @@ func (m Model) copyCurrentView() string {
 			m.lastReqName, r.Command, r.StatusCode, r.Duration.Round(1_000_000))
 	case bodyCommand:
 		label = "request"
-		if m.lastRawCurl != "" {
-			text = m.lastRawCurl
-		} else {
-			text = r.Command
-		}
+		text = m.formatCurlRequestPlain()
 	}
 	if text != "" {
 		clipboard.WriteAll(text)
@@ -1607,6 +1609,11 @@ func (m Model) viewResponse() string {
 	}
 	actions = append(actions,
 		dimStyle.Render("[y] copy"),
+	)
+	if m.respBodyMode == bodyCommand {
+		actions = append(actions, dimStyle.Render("[c] copy curl"))
+	}
+	actions = append(actions,
 		dimStyle.Render("[j/k] scroll"),
 		dimStyle.Render("[esc] back"),
 	)
@@ -2666,6 +2673,81 @@ func (m Model) formatCurlRequest(wrapW int) string {
 	// Raw curl
 	out.WriteString("  " + curlSectionTitle.Render("RAW CURL") + "\n")
 	out.WriteString("  " + dimStyle.Render(wrapContent(raw, wrapW-4)))
+
+	return out.String()
+}
+
+// formatCurlRequestPlain builds a plain-text version of the request tab content for copying.
+func (m Model) formatCurlRequestPlain() string {
+	raw := m.lastRawCurl
+	if raw == "" {
+		if m.lastResult != nil {
+			return m.lastResult.Command
+		}
+		return ""
+	}
+
+	preview := parseCurlPreview(raw)
+	var out strings.Builder
+
+	// Method + URL
+	method := preview.method
+	if method == "" {
+		method = "GET"
+	}
+	if preview.url != "" {
+		out.WriteString(method + "   " + preview.url)
+	} else {
+		out.WriteString(method + "   <no url>")
+	}
+	out.WriteString("\n\n")
+
+	// Divider
+	out.WriteString(strings.Repeat("─", 80))
+	out.WriteString("\n\n")
+
+	// Headers
+	if len(preview.headers) > 0 {
+		out.WriteString(fmt.Sprintf("HEADERS (%d)\n", len(preview.headers)))
+		for _, h := range preview.headers {
+			out.WriteString("  " + h + "\n")
+		}
+		out.WriteString("\n")
+	}
+
+	// Body
+	if preview.body != "" {
+		out.WriteString(fmt.Sprintf("BODY (%d bytes)\n", len(preview.body)))
+		if isJSON(preview.body) {
+			var obj interface{}
+			if err := json.Unmarshal([]byte(preview.body), &obj); err == nil {
+				indented, err2 := json.MarshalIndent(obj, "", "  ")
+				if err2 == nil {
+					out.WriteString(string(indented))
+				} else {
+					out.WriteString(preview.body)
+				}
+			} else {
+				out.WriteString(preview.body)
+			}
+		} else {
+			out.WriteString(preview.body)
+		}
+		out.WriteString("\n\n")
+	}
+
+	// Flags
+	if len(preview.flags) > 0 {
+		out.WriteString("OPTIONS\n")
+		for _, f := range preview.flags {
+			out.WriteString("  • " + f + "\n")
+		}
+		out.WriteString("\n")
+	}
+
+	// Raw curl
+	out.WriteString("RAW CURL\n")
+	out.WriteString(raw)
 
 	return out.String()
 }
