@@ -15,6 +15,10 @@ type RequestEntry struct {
 
 // Scan walks the requests directory and returns all .curl files found.
 func Scan(requestsDir string) ([]RequestEntry, error) {
+	if _, err := os.Stat(requestsDir); os.IsNotExist(err) {
+		return nil, nil
+	}
+
 	var entries []RequestEntry
 
 	err := filepath.Walk(requestsDir, func(path string, info os.FileInfo, err error) error {
