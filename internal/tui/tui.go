@@ -645,6 +645,7 @@ func (m Model) handleHistoryKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				StatusCode: statusCode,
 				Headers:    headers,
 				Body:       body,
+				Duration:   entry.Duration,
 			}
 			m.historyCurl = rawCurl
 			m.historyReqName = entry.Timestamp
@@ -1754,6 +1755,9 @@ func (m Model) viewHistory() string {
 			}
 
 			line := timePart + " " + methodPart + " " + endpointPart + namePart
+			if entry.Duration > 0 {
+				line += "  " + dimStyle.Render(entry.Duration.Round(1_000_000).String())
+			}
 
 			if i == m.historyCursor {
 				b.WriteString(selectedStyle.Render("  ▸ ") + line)
@@ -1782,6 +1786,9 @@ func (m Model) viewHistoryDetail() string {
 	b.WriteString(responseHeaderStyle.Render("  📜 HISTORY"))
 	if r.StatusCode != "" {
 		b.WriteString("  " + statusColor(r.StatusCode).Render(r.StatusCode))
+	}
+	if r.Duration > 0 {
+		b.WriteString("  " + dimStyle.Render(r.Duration.Round(1_000_000).String()))
 	}
 	b.WriteString("  " + dimStyle.Render(m.historyReqName))
 	b.WriteString("\n\n")
@@ -1855,6 +1862,9 @@ func (m Model) viewHistoryDetail() string {
 		meta.WriteString(metaKeyStyle.Render("  Command:   ") + dimStyle.Render(r.Command) + "\n")
 		if r.StatusCode != "" {
 			meta.WriteString(metaKeyStyle.Render("  Status:    ") + statusColor(r.StatusCode).Render(r.StatusCode) + "\n")
+		}
+		if r.Duration > 0 {
+			meta.WriteString(metaKeyStyle.Render("  Duration:  ") + metaValStyle.Render(r.Duration.Round(1_000_000).String()) + "\n")
 		}
 		if ct != "" {
 			meta.WriteString(metaKeyStyle.Render("  Type:      ") + metaValStyle.Render(ct) + "\n")

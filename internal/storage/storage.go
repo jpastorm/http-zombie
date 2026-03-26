@@ -27,6 +27,13 @@ func SaveResponse(baseDir string, requestName string, result *executor.Result) (
 	if result.Headers != "" {
 		content = result.Headers + "\n\n" + result.Body
 	}
+
+	// Save duration alongside the response
+	if result.Duration > 0 {
+		durPath := fullPath + ".duration"
+		os.WriteFile(durPath, []byte(result.Duration.String()), 0o644)
+	}
+
 	if err := os.WriteFile(fullPath, []byte(content), 0o644); err != nil {
 		return "", fmt.Errorf("cannot save response: %w", err)
 	}
@@ -69,6 +76,12 @@ func SaveHistory(baseDir string, requestName string, result *executor.Result, ra
 		os.WriteFile(namePath, []byte(requestName), 0o644)
 	}
 
+	// Save response time duration
+	if result.Duration > 0 {
+		durPath := filepath.Join(histDir, ts+".duration")
+		os.WriteFile(durPath, []byte(result.Duration.String()), 0o644)
+	}
+
 	return reqPath, respPath, nil
 }
 
@@ -79,6 +92,7 @@ type HistoryEntry struct {
 	RespPath    string
 	CurlPath    string
 	RequestName string
+	Duration    time.Duration
 }
 
 // ListHistory returns all history entries sorted by timestamp (newest first).
@@ -98,6 +112,8 @@ func ListHistory(baseDir string) ([]HistoryEntry, error) {
 		var ts string
 
 		if idx := len(name) - len(".name"); idx > 0 && name[idx:] == ".name" {
+			ts = name[:idx]
+		} else if idx := len(name) - len(".duration"); idx > 0 && name[idx:] == ".duration" {
 			ts = name[:idx]
 		} else if idx := len(name) - len(".curl"); idx > 0 && name[idx:] == ".curl" {
 			ts = name[:idx]
@@ -119,6 +135,13 @@ func ListHistory(baseDir string) ([]HistoryEntry, error) {
 			data, err := os.ReadFile(filepath.Join(histDir, name))
 			if err == nil {
 				entry.RequestName = strings.TrimSpace(string(data))
+			}
+		} else if strings.HasSuffix(name, ".duration") {
+			data, err := os.ReadFile(filepath.Join(histDir, name))
+			if err == nil {
+				if d, err := time.ParseDuration(strings.TrimSpace(string(data))); err == nil {
+					entry.Duration = d
+				}
 			}
 		} else if strings.HasSuffix(name, ".curl") {
 			entry.CurlPath = filepath.Join(histDir, name)
