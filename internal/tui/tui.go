@@ -503,20 +503,10 @@ func (m Model) handleSearchKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 func (m Model) handleResponseKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "q", "esc":
-		// Check for unsaved changes in editor
-		input := strings.TrimSpace(m.curlTextarea.Value())
-		if input != "" && input != m.lastRawCurl {
-			m.exitConfirmBack = viewResponse
-			m.mode = viewExitConfirm
-			return m, nil
-		}
-		// Discard pending edit when leaving response view
-		if m.lastReqName != "" && m.lastReqName != "curl-quick-run" {
-			delete(m.pendingEdits, m.lastReqName)
-		}
-		m.mode = viewList
-		m.scroll = 0
-		m.resetSearch()
+		// Confirm before leaving
+		m.exitConfirmBack = viewResponse
+		m.mode = viewExitConfirm
+		return m, nil
 	case "r":
 		// rerun: if it was a curl-quick-run, re-execute from stored curl
 		if m.lastReqName == "curl-quick-run" && m.lastRawCurl != "" {
@@ -975,21 +965,9 @@ func (m Model) rerunCurl() (Model, tea.Cmd) {
 func (m Model) handleResponseEditorKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "esc":
-		// Check for unsaved changes
-		input := strings.TrimSpace(m.curlTextarea.Value())
-		if input != "" && input != m.lastRawCurl {
-			m.exitConfirmBack = viewResponse
-			m.mode = viewExitConfirm
-			return m, nil
-		}
-		// Discard pending edit when leaving response view
-		if m.lastReqName != "" && m.lastReqName != "curl-quick-run" {
-			delete(m.pendingEdits, m.lastReqName)
-		}
-		m.mode = viewList
-		m.scroll = 0
-		m.resetSearch()
-		m.curlTextarea.Blur()
+		// Always confirm before leaving editor
+		m.exitConfirmBack = viewResponse
+		m.mode = viewExitConfirm
 		return m, nil
 	case "ctrl+c":
 		return m, tea.Quit
@@ -2047,18 +2025,9 @@ func (m Model) handleRequestInfoKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.reqInfoPane == 0 {
 		switch msg.String() {
 		case "esc":
-			// Check for unsaved changes
-			input := strings.TrimSpace(m.curlTextarea.Value())
-			if input != "" && input != m.reqInfoRawCurl {
-				m.exitConfirmBack = viewRequestInfo
-				m.mode = viewExitConfirm
-				return m, nil
-			}
-			// Discard pending edit when leaving detail view
-			delete(m.pendingEdits, m.reqInfoEntry.Name)
-			m.mode = viewList
-			m.resetSearch()
-			m.curlTextarea.Blur()
+			// Always confirm before leaving editor
+			m.exitConfirmBack = viewRequestInfo
+			m.mode = viewExitConfirm
 			return m, nil
 		case "ctrl+c":
 			return m, tea.Quit
@@ -2125,17 +2094,10 @@ func (m Model) handleRequestInfoKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// Pane 1: responses
 	switch msg.String() {
 	case "esc", "q":
-		// Check for unsaved changes (textarea still has the edit)
-		input := strings.TrimSpace(m.curlTextarea.Value())
-		if input != "" && input != m.reqInfoRawCurl {
-			m.exitConfirmBack = viewRequestInfo
-			m.mode = viewExitConfirm
-			return m, nil
-		}
-		// Discard pending edit when leaving detail view
-		delete(m.pendingEdits, m.reqInfoEntry.Name)
-		m.mode = viewList
-		m.resetSearch()
+		// Always confirm before leaving
+		m.exitConfirmBack = viewRequestInfo
+		m.mode = viewExitConfirm
+		return m, nil
 	case "tab", "1":
 		m.reqInfoPane = 0
 		m.reqInfoScroll = 0
@@ -2574,11 +2536,11 @@ func (m Model) viewExitConfirm() string {
 	var b strings.Builder
 
 	b.WriteString("\n")
-	b.WriteString(warningStyle.Render("  ⚠ UNSAVED CHANGES"))
+	b.WriteString(warningStyle.Render("  ⚠ EXIT?"))
 	b.WriteString("\n\n")
-	b.WriteString(normalStyle.Render("  You have unsaved edits. Exit anyway?"))
+	b.WriteString(normalStyle.Render("  Are you sure you want to exit?"))
 	b.WriteString("\n\n")
-	b.WriteString(warningStyle.Render("  [y/enter] discard & exit") + "  " + helpStyle.Render("[n/esc] continue editing"))
+	b.WriteString(warningStyle.Render("  [y/enter] exit") + "  " + helpStyle.Render("[n/esc] stay"))
 
 	return b.String()
 }
