@@ -1027,27 +1027,31 @@ func (m Model) handleResponseEditorKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case "ctrl+s":
-		// Save to original file (only if not curl-quick-run)
+		// Save to original file if it exists
 		input := strings.TrimSpace(m.curlTextarea.Value())
 		if input == "" {
 			return m, nil
 		}
-		if m.lastReqName == "curl-quick-run" || m.lastReqPath == "" {
-			// No original file to save, prompt to save as new
-			m.lastRawCurl = input
-			m.mode = viewResponseSave
-			m.respSaveName = ""
-			return m, nil
+		// Check if we have a valid path and the file exists
+		if m.lastReqPath != "" {
+			if _, err := os.Stat(m.lastReqPath); err == nil {
+				// File exists, save to it
+				if err := os.WriteFile(m.lastReqPath, []byte(input+"\n"), 0o644); err != nil {
+					m.statusMsg = errorStyle.Render("☠ Save failed: " + err.Error())
+					return m, nil
+				}
+				m.lastRawCurl = input
+				// Clear pending edit since it's now saved
+				delete(m.pendingEdits, m.lastReqName)
+				m.copyFeedback = successStyle.Render("✓ saved")
+				return m, tea.Tick(2*time.Second, func(time.Time) tea.Msg { return clearCopyMsg{} })
+			}
 		}
-		if err := os.WriteFile(m.lastReqPath, []byte(input+"\n"), 0o644); err != nil {
-			m.statusMsg = errorStyle.Render("☠ Save failed: " + err.Error())
-			return m, nil
-		}
+		// No valid file to save to, prompt to save as new
 		m.lastRawCurl = input
-		// Clear pending edit since it's now saved
-		delete(m.pendingEdits, m.lastReqName)
-		m.copyFeedback = successStyle.Render("✓ saved")
-		return m, tea.Tick(2*time.Second, func(time.Time) tea.Msg { return clearCopyMsg{} })
+		m.mode = viewResponseSave
+		m.respSaveName = ""
+		return m, nil
 	case "ctrl+h":
 		if m.startHostReplace() {
 			return m, nil
