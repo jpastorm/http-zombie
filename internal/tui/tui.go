@@ -58,6 +58,7 @@ const (
 type requestDoneMsg struct {
 	result      *executor.Result
 	requestName string
+	reqPath     string
 	respPath    string
 	rawCurl     string
 	xhArgs      []string
@@ -95,6 +96,10 @@ type Model struct {
 
 	// response view state
 	respBodyMode bodyMode
+	lastReqPath  string // path to original .curl file (for editing)
+
+	// pending edits buffer (temporary edits not yet saved to file)
+	pendingEdits map[string]string // request name -> edited curl content
 
 	// history
 	history       []storage.HistoryEntry
@@ -166,6 +171,7 @@ func New(baseDir string, requests []scanner.RequestEntry) Model {
 		requests:     requests,
 		filtered:     requests,
 		curlTextarea: ta,
+		pendingEdits: make(map[string]string),
 	}
 }
 
@@ -240,6 +246,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.lastResult = msg.result
 		m.lastReqName = msg.requestName
 		m.lastRespPath = msg.respPath
+		m.lastReqPath = msg.reqPath
 		m.lastRawCurl = msg.rawCurl
 		m.lastXhArgs = msg.xhArgs
 		m.lastXhBody = msg.xhBody
@@ -487,6 +494,10 @@ func (m Model) handleSearchKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 func (m Model) handleResponseKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "q", "esc":
+		// Discard pending edit when leaving response view
+		if m.lastReqName != "" && m.lastReqName != "curl-quick-run" {
+			delete(m.pendingEdits, m.lastReqName)
+		}
 		m.mode = viewList
 		m.scroll = 0
 		m.resetSearch()
@@ -948,6 +959,10 @@ func (m Model) rerunCurl() (Model, tea.Cmd) {
 func (m Model) handleResponseEditorKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "esc":
+		// Discard pending edit when leaving response view
+		if m.lastReqName != "" && m.lastReqName != "curl-quick-run" {
+			delete(m.pendingEdits, m.lastReqName)
+		}
 		m.mode = viewList
 		m.scroll = 0
 		m.resetSearch()
@@ -959,6 +974,13 @@ func (m Model) handleResponseEditorKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		input := strings.TrimSpace(m.curlTextarea.Value())
 		if input == "" {
 			return m, nil
+		}
+		// Save pending edit before executing (to restore on return)
+		if m.lastReqName != "" && m.lastReqName != "curl-quick-run" && input != m.lastRawCurl {
+			if m.pendingEdits == nil {
+				m.pendingEdits = make(map[string]string)
+			}
+			m.pendingEdits[m.lastReqName] = input
 		}
 		return m.executeFromResponseEditor()
 	case "tab", "ctrl+p":
@@ -981,6 +1003,28 @@ func (m Model) handleResponseEditorKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.respSaveName = ""
 		}
 		return m, nil
+	case "ctrl+s":
+		// Save to original file (only if not curl-quick-run)
+		input := strings.TrimSpace(m.curlTextarea.Value())
+		if input == "" {
+			return m, nil
+		}
+		if m.lastReqName == "curl-quick-run" || m.lastReqPath == "" {
+			// No original file to save, prompt to save as new
+			m.lastRawCurl = input
+			m.mode = viewResponseSave
+			m.respSaveName = ""
+			return m, nil
+		}
+		if err := os.WriteFile(m.lastReqPath, []byte(input+"\n"), 0o644); err != nil {
+			m.statusMsg = errorStyle.Render("☠ Save failed: " + err.Error())
+			return m, nil
+		}
+		m.lastRawCurl = input
+		// Clear pending edit since it's now saved
+		delete(m.pendingEdits, m.lastReqName)
+		m.copyFeedback = successStyle.Render("✓ saved")
+		return m, tea.Tick(2*time.Second, func(time.Time) tea.Msg { return clearCopyMsg{} })
 	case "ctrl+h":
 		if m.startHostReplace() {
 			return m, nil
@@ -1147,10 +1191,11 @@ func (m Model) executeRequest(entry scanner.RequestEntry) (Model, tea.Cmd) {
 	ctx, cancel := context.WithCancel(context.Background())
 	m.cancelFunc = cancel
 
+	entryPath := entry.Path
 	return m, tea.Batch(
 		tea.Tick(120*time.Millisecond, func(time.Time) tea.Msg { return spinnerTickMsg{} }),
 		func() tea.Msg {
-			req, err := parser.ParseFile(entry.Path)
+			req, err := parser.ParseFile(entryPath)
 			if err != nil {
 				return requestErrMsg{err: err}
 			}
@@ -1170,6 +1215,7 @@ func (m Model) executeRequest(entry scanner.RequestEntry) (Model, tea.Cmd) {
 			return requestDoneMsg{
 				result:      result,
 				requestName: entry.Name,
+				reqPath:     entryPath,
 				respPath:    respPath,
 				rawCurl:     req.RawCurl,
 				xhArgs:      args,
@@ -1514,7 +1560,8 @@ func (m Model) viewResponse() string {
 		b.WriteString("\n")
 		actions := []string{
 			dimStyle.Render("[ctrl+x] run"),
-			dimStyle.Render("[ctrl+g] save"),
+			dimStyle.Render("[ctrl+s] save"),
+			dimStyle.Render("[ctrl+g] save as"),
 			dimStyle.Render("[ctrl+h] host"),
 			dimStyle.Render("[tab] switch tab"),
 			dimStyle.Render("[ctrl+y] copy"),
@@ -1947,7 +1994,13 @@ func (m Model) openRequestInfo(entry scanner.RequestEntry) (Model, tea.Cmd) {
 	m.reqInfoPane = 0
 	m.reqInfoCursor = 0
 	m.reqInfoScroll = 0
-	m.curlTextarea.SetValue(rawCurl)
+
+	// Use pending edit if available, otherwise use file content
+	if pending, ok := m.pendingEdits[entry.Name]; ok {
+		m.curlTextarea.SetValue(pending)
+	} else {
+		m.curlTextarea.SetValue(rawCurl)
+	}
 	for m.curlTextarea.Line() > 0 {
 		m.curlTextarea.CursorUp()
 	}
@@ -1961,6 +2014,8 @@ func (m Model) handleRequestInfoKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.reqInfoPane == 0 {
 		switch msg.String() {
 		case "esc":
+			// Discard pending edit when leaving detail view
+			delete(m.pendingEdits, m.reqInfoEntry.Name)
 			m.mode = viewList
 			m.resetSearch()
 			m.curlTextarea.Blur()
@@ -1971,6 +2026,13 @@ func (m Model) handleRequestInfoKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			input := strings.TrimSpace(m.curlTextarea.Value())
 			if input == "" {
 				return m, nil
+			}
+			// Save pending edit before executing (to restore on return)
+			if input != m.reqInfoRawCurl {
+				if m.pendingEdits == nil {
+					m.pendingEdits = make(map[string]string)
+				}
+				m.pendingEdits[m.reqInfoEntry.Name] = input
 			}
 			return m.executeFromReqInfoEditor()
 		case "ctrl+s":
@@ -1983,9 +2045,19 @@ func (m Model) handleRequestInfoKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			m.reqInfoRawCurl = input
+			// Clear pending edit since it's now saved
+			delete(m.pendingEdits, m.reqInfoEntry.Name)
 			m.copyFeedback = successStyle.Render("✓ saved")
 			return m, tea.Tick(2*time.Second, func(time.Time) tea.Msg { return clearCopyMsg{} })
 		case "tab":
+			// Save pending edit before switching tabs
+			input := strings.TrimSpace(m.curlTextarea.Value())
+			if input != "" && input != m.reqInfoRawCurl {
+				if m.pendingEdits == nil {
+					m.pendingEdits = make(map[string]string)
+				}
+				m.pendingEdits[m.reqInfoEntry.Name] = input
+			}
 			m.reqInfoPane = 1
 			m.reqInfoResponses = storage.ListRequestResponses(m.baseDir, m.reqInfoEntry.Name)
 			m.reqInfoScroll = 0
@@ -2013,6 +2085,8 @@ func (m Model) handleRequestInfoKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// Pane 1: responses
 	switch msg.String() {
 	case "esc", "q":
+		// Discard pending edit when leaving detail view
+		delete(m.pendingEdits, m.reqInfoEntry.Name)
 		m.mode = viewList
 		m.resetSearch()
 	case "tab", "1":
@@ -2319,6 +2393,8 @@ func (m Model) handleDeleteConfirmKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.statusMsg = errorStyle.Render("☠ Delete failed: " + err.Error())
 		} else {
 			m.statusMsg = successStyle.Render("✓ Deleted " + m.deleteTarget.Name + " and all its history/responses")
+			// Clear any pending edits for this request
+			delete(m.pendingEdits, m.deleteTarget.Name)
 		}
 		m.rescanRequests()
 		if m.cursor >= len(m.filtered) && m.cursor > 0 {
