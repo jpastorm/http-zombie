@@ -52,6 +52,10 @@ var (
 			Foreground(bloodRed).
 			Bold(true)
 
+	warningStyle = lipgloss.NewStyle().
+			Foreground(rottenYellow).
+			Bold(true)
+
 	successStyle = lipgloss.NewStyle().
 			Foreground(zombieGreen)
 
