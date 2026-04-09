@@ -666,7 +666,7 @@ func (m Model) handleHistoryKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 			m.historyCurl = rawCurl
 			m.historyReqName = entry.Timestamp
-			m.historyBodyMode = bodyResponse
+			m.historyBodyMode = bodyCommand
 			m.historyScroll = 0
 			m.historyDetailBack = viewHistory
 			m.mode = viewHistoryDetail
@@ -965,9 +965,17 @@ func (m Model) rerunCurl() (Model, tea.Cmd) {
 func (m Model) handleResponseEditorKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "esc":
-		// Always confirm before leaving editor
-		m.exitConfirmBack = viewResponse
-		m.mode = viewExitConfirm
+		// Only confirm if there are unsaved changes
+		input := strings.TrimSpace(m.curlTextarea.Value())
+		if input != m.lastRawCurl {
+			m.exitConfirmBack = viewResponse
+			m.mode = viewExitConfirm
+			return m, nil
+		}
+		m.mode = viewList
+		m.scroll = 0
+		m.resetSearch()
+		m.curlTextarea.Blur()
 		return m, nil
 	case "ctrl+c":
 		return m, tea.Quit
@@ -1201,32 +1209,47 @@ func (m Model) executeRequest(entry scanner.RequestEntry) (Model, tea.Cmd) {
 	m.cancelFunc = cancel
 
 	entryPath := entry.Path
+	entryName := entry.Name
+	baseDir := m.baseDir
+
+	// Use pending edit if available, otherwise read from file
+	var curlOverride string
+	if pending, ok := m.pendingEdits[entry.Name]; ok {
+		curlOverride = pending
+	}
+
 	return m, tea.Batch(
 		tea.Tick(120*time.Millisecond, func(time.Time) tea.Msg { return spinnerTickMsg{} }),
 		func() tea.Msg {
-			req, err := parser.ParseFile(entryPath)
-			if err != nil {
-				return requestErrMsg{err: err}
+			var rawCurl string
+			if curlOverride != "" {
+				rawCurl = curlOverride
+			} else {
+				req, err := parser.ParseFile(entryPath)
+				if err != nil {
+					return requestErrMsg{err: err}
+				}
+				rawCurl = req.RawCurl
 			}
 
-			args, body := parser.CurlToXhArgs(req.RawCurl)
+			args, body := parser.CurlToXhArgs(rawCurl)
 			result, err := executor.RunCtx(ctx, args, body)
 			if err != nil {
 				return requestErrMsg{err: err}
 			}
 
 			// Save response
-			respPath, _ := storage.SaveResponse(m.baseDir, entry.Name, result)
+			respPath, _ := storage.SaveResponse(baseDir, entryName, result)
 
 			// Save history
-			storage.SaveHistory(m.baseDir, entry.Name, result, req.RawCurl)
+			storage.SaveHistory(baseDir, entryName, result, rawCurl)
 
 			return requestDoneMsg{
 				result:      result,
-				requestName: entry.Name,
+				requestName: entryName,
 				reqPath:     entryPath,
 				respPath:    respPath,
-				rawCurl:     req.RawCurl,
+				rawCurl:     rawCurl,
 				xhArgs:      args,
 				xhBody:      body,
 			}
@@ -2025,9 +2048,17 @@ func (m Model) handleRequestInfoKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.reqInfoPane == 0 {
 		switch msg.String() {
 		case "esc":
-			// Always confirm before leaving editor
-			m.exitConfirmBack = viewRequestInfo
-			m.mode = viewExitConfirm
+			// Only confirm if there are unsaved changes
+			input := strings.TrimSpace(m.curlTextarea.Value())
+			if input != m.reqInfoRawCurl {
+				m.exitConfirmBack = viewRequestInfo
+				m.mode = viewExitConfirm
+				return m, nil
+			}
+			m.mode = viewList
+			m.scroll = 0
+			m.resetSearch()
+			m.curlTextarea.Blur()
 			return m, nil
 		case "ctrl+c":
 			return m, tea.Quit
@@ -2054,9 +2085,11 @@ func (m Model) handleRequestInfoKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			m.reqInfoRawCurl = input
+			// Re-parse xh args to keep in sync
+			m.reqInfoXhArgs, m.reqInfoXhBody = parser.CurlToXhArgs(input)
 			// Clear pending edit since it's now saved
 			delete(m.pendingEdits, m.reqInfoEntry.Name)
-			m.copyFeedback = successStyle.Render("✓ saved")
+			m.copyFeedback = successStyle.Render("✓ saved to " + m.reqInfoEntry.Path)
 			return m, tea.Tick(2*time.Second, func(time.Time) tea.Msg { return clearCopyMsg{} })
 		case "tab":
 			// Save pending edit before switching tabs

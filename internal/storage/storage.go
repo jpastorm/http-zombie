@@ -230,7 +230,7 @@ func ListRequestResponses(baseDir, requestName string) []ResponseEntry {
 // (identified by its timestamp prefix).
 func DeleteHistoryEntry(baseDir string, timestamp string) error {
 	histDir := filepath.Join(baseDir, "history")
-	for _, suffix := range []string{".name", ".request", ".response.json", ".curl"} {
+	for _, suffix := range []string{".name", ".request", ".response.json", ".curl", ".duration"} {
 		p := filepath.Join(histDir, timestamp+suffix)
 		if err := os.Remove(p); err != nil && !os.IsNotExist(err) {
 			return fmt.Errorf("cannot delete %s: %w", p, err)
@@ -296,7 +296,7 @@ func DeleteRecord(baseDir string, requestName string, requestPath string) error 
 		}
 		// This history group matches — remove all files with the same timestamp
 		ts := strings.TrimSuffix(e.Name(), ".name")
-		for _, suffix := range []string{".name", ".request", ".response.json", ".curl"} {
+		for _, suffix := range []string{".name", ".request", ".response.json", ".curl", ".duration"} {
 			os.Remove(filepath.Join(histDir, ts+suffix))
 		}
 	}
