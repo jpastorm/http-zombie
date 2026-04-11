@@ -2144,10 +2144,12 @@ func (m Model) handleRequestInfoKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "up", "k":
 		if m.reqInfoCursor > 0 {
 			m.reqInfoCursor--
+			m.ensureReqInfoCursorVisible()
 		}
 	case "down", "j":
 		if m.reqInfoCursor < len(m.reqInfoResponses)-1 {
 			m.reqInfoCursor++
+			m.ensureReqInfoCursorVisible()
 		}
 	case "enter":
 		if len(m.reqInfoResponses) > 0 {
@@ -2192,6 +2194,30 @@ func (m Model) handleRequestInfoKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, tea.Quit
 	}
 	return m, nil
+}
+
+// ensureReqInfoCursorVisible adjusts reqInfoScroll so the cursor stays on screen.
+func (m *Model) ensureReqInfoCursorVisible() {
+	viewHeight := m.height - 10
+	if viewHeight < 5 {
+		viewHeight = 5
+	}
+	// Each response entry is 1 line; offset by 2 for header lines ("X saved responses" + blank)
+	lineOffset := m.reqInfoCursor + 2
+
+	// When scrolling up, keep header lines visible by showing 2 lines above cursor
+	scrollTop := lineOffset - 2
+	if scrollTop < 0 {
+		scrollTop = 0
+	}
+	if m.reqInfoScroll > scrollTop {
+		m.reqInfoScroll = scrollTop
+	}
+
+	// When scrolling down, ensure cursor line is within the viewport
+	if lineOffset >= m.reqInfoScroll+viewHeight {
+		m.reqInfoScroll = lineOffset - viewHeight + 1
+	}
 }
 
 func (m Model) viewRequestInfo() string {
@@ -2302,6 +2328,9 @@ func (m Model) viewRequestInfo() string {
 
 			timePart := fmt.Sprintf("%-16s", ts)
 			detailParts := []string{statusBadge}
+			if r.Duration > 0 {
+				detailParts = append(detailParts, dimStyle.Render(r.Duration.Round(1_000_000).String()))
+			}
 			if ctBadge != "" {
 				detailParts = append(detailParts, ctBadge)
 			}
@@ -2321,6 +2350,10 @@ func (m Model) viewRequestInfo() string {
 	}
 
 	lines := strings.Split(content, "\n")
+	// Remove trailing empty line from final \n
+	if len(lines) > 0 && lines[len(lines)-1] == "" {
+		lines = lines[:len(lines)-1]
+	}
 	totalLines := len(lines)
 	viewHeight := m.height - 10
 	if viewHeight < 5 {

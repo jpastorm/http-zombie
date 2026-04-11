@@ -177,6 +177,7 @@ func ReadFile(path string) (string, error) {
 type ResponseEntry struct {
 	Timestamp string
 	Path      string
+	Duration  time.Duration
 }
 
 // CountHistory returns the number of history entries.
@@ -208,13 +209,27 @@ func ListRequestResponses(baseDir, requestName string) []ResponseEntry {
 		}
 		rel, _ := filepath.Rel(respDir, path)
 		rel = filepath.ToSlash(rel)
+
+		// Skip .duration sidecar files
+		if strings.HasSuffix(rel, ".duration") {
+			return nil
+		}
+
 		name := strings.TrimSuffix(rel, ".json")
 		if strings.HasPrefix(name, prefix) {
 			ts := strings.TrimPrefix(name, prefix)
-			entries = append(entries, ResponseEntry{
+			entry := ResponseEntry{
 				Timestamp: ts,
 				Path:      path,
-			})
+			}
+			// Read duration from sidecar file if it exists
+			durPath := path + ".duration"
+			if data, err := os.ReadFile(durPath); err == nil {
+				if d, err := time.ParseDuration(strings.TrimSpace(string(data))); err == nil {
+					entry.Duration = d
+				}
+			}
+			entries = append(entries, entry)
 		}
 		return nil
 	})
