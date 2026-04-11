@@ -1482,15 +1482,15 @@ func (m Model) viewResponse() string {
 	var b strings.Builder
 
 	// ─── STATUS BAR ───
+	durationStr := r.Duration.Round(1_000_000).String()
 	statusLine := ""
 	if r.StatusCode != "" {
-		statusLine = statusColor(r.StatusCode).Render("  " + r.StatusCode + "  ")
+		statusLine = statusColor(r.StatusCode).Render("  "+r.StatusCode) + " " + dimStyle.Render(durationStr)
 	} else if r.Error != "" {
-		statusLine = errorStyle.Render("  ERROR  ")
+		statusLine = errorStyle.Render("  ERROR") + " " + dimStyle.Render(durationStr)
 	} else {
-		statusLine = dimStyle.Render("  ???  ")
+		statusLine = dimStyle.Render("  ???") + " " + dimStyle.Render(durationStr)
 	}
-	timeLine := dimStyle.Render(fmt.Sprintf("Time: %s", r.Duration.Round(1_000_000)))
 	ct := extractContentType(r.Headers)
 	if ct == "" {
 		ct = "unknown"
@@ -1498,7 +1498,7 @@ func (m Model) viewResponse() string {
 	typeLine := dimStyle.Render(fmt.Sprintf("Type: %s", ct))
 
 	metaBar := lipgloss.JoinHorizontal(lipgloss.Center,
-		statusLine, "  ", timeLine, "  ", typeLine)
+		statusLine, "  ", typeLine)
 	if m.lastReqName != "" {
 		metaBar += "  " + dimStyle.Render("← "+m.lastReqName)
 	}
